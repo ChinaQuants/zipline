@@ -1944,6 +1944,10 @@ class TestPerformanceTracker(unittest.TestCase):
         )
         check_perf_tracker_serialization(perf_tracker)
 
+    def test_asset_end(self):
+        #TODO write test
+        return
+
 
 class TestPosition(unittest.TestCase):
     def setUp(self):
@@ -1976,9 +1980,12 @@ class TestPositionTracker(unittest.TestCase):
         stats = [
             'calculate_positions_value',
             '_net_exposure',
+            '_gross_value',
             '_gross_exposure',
+            '_short_value',
             '_short_exposure',
             '_shorts_count',
+            '_long_value',
             '_long_exposure',
             '_longs_count',
         ]
@@ -1987,6 +1994,22 @@ class TestPositionTracker(unittest.TestCase):
             val = meth()
             self.assertEquals(val, 0)
             self.assertNotIsInstance(val, (bool, np.bool_))
+
+    def test_update_last_sale(self):
+        #TODO write test
+        return
+
+    def test_position_values(self):
+        #TODO write test
+        return
+
+    def test_position_exposures(self):
+        #TODO write test
+        return
+
+    def test_generate_end_sid_transaction(self):
+        #TODO write test
+        return
 
     def test_serializaition(self):
         pt = perf.PositionTracker()
