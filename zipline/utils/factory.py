@@ -120,6 +120,7 @@ def create_trade_history(sid, prices, amounts, interval, sim_params,
                          source_id="test_factory"):
     trades = []
     current = sim_params.first_open
+    trading.environment.update_asset_finder(identifiers=[sid])
 
     oneday = timedelta(days=1)
     use_midnight = interval >= oneday
@@ -149,7 +150,6 @@ def create_dividend(sid, payment, declared_date, ex_date, pay_date):
         'type': DATASOURCE_TYPE.DIVIDEND,
         'source_id': 'MockDividendSource'
     })
-
     return div
 
 
@@ -224,64 +224,58 @@ def create_returns_from_list(returns, sim_params):
                      data=returns)
 
 
-def create_daily_trade_source(sids, trade_count, sim_params,
-                              concurrent=False):
+def create_daily_trade_source(sids, sim_params, concurrent=False):
     """
     creates trade_count trades for each sid in sids list.
     first trade will be on sim_params.period_start, and daily
     thereafter for each sid. Thus, two sids should result in two trades per
     day.
-
-    Important side-effect: sim_params.period_end will be modified
-    to match the day of the final trade.
     """
     return create_trade_source(
         sids,
-        trade_count,
         timedelta(days=1),
         sim_params,
         concurrent=concurrent
     )
 
 
-def create_minutely_trade_source(sids, trade_count, sim_params,
-                                 concurrent=False):
+def create_minutely_trade_source(sids, sim_params, concurrent=False):
     """
     creates trade_count trades for each sid in sids list.
     first trade will be on sim_params.period_start, and every minute
     thereafter for each sid. Thus, two sids should result in two trades per
     minute.
-
-    Important side-effect: sim_params.period_end will be modified
-    to match the day of the final trade.
     """
     return create_trade_source(
         sids,
-        trade_count,
         timedelta(minutes=1),
         sim_params,
         concurrent=concurrent
     )
 
 
-def create_trade_source(sids, trade_count,
-                        trade_time_increment, sim_params,
+def create_trade_source(sids, trade_time_increment, sim_params,
                         concurrent=False):
+
+    # If the sim_params define an end that is during market hours, that will be
+    # used as the end of the data source
+    if trading.environment.is_market_hours(sim_params.period_end):
+        end = sim_params.period_end
+    # Otherwise, the last_close after the period_end is used as the end of the
+    # data source
+    else:
+        end = sim_params.last_close
 
     args = tuple()
     kwargs = {
-        'count': trade_count,
         'sids': sids,
         'start': sim_params.first_open,
+        'end': end,
         'delta': trade_time_increment,
         'filter': sids,
         'concurrent': concurrent
     }
     source = SpecificEquityTrades(*args, **kwargs)
-
-    # TODO: do we need to set the trading environment's end to same dt as
-    # the last trade in the history?
-    # sim_params.period_end = trade_history[-1].dt
 
     return source
 
@@ -318,10 +312,12 @@ def create_test_df_source(sim_params=None, bars='daily'):
 
     df = pd.DataFrame(x, index=index, columns=[0])
 
+    trading.environment.update_asset_finder(identifiers=[0])
+
     return DataFrameSource(df), df
 
 
-def create_test_panel_source(sim_params=None):
+def create_test_panel_source(sim_params=None, source_type=None):
     start = sim_params.first_open \
         if sim_params else pd.datetime(1990, 1, 3, 0, 0, 0, 0, pytz.utc)
 
@@ -335,12 +331,17 @@ def create_test_panel_source(sim_params=None):
 
     price = np.arange(0, len(index))
     volume = np.ones(len(index)) * 1000
+
     arbitrary = np.ones(len(index))
 
     df = pd.DataFrame({'price': price,
                        'volume': volume,
                        'arbitrary': arbitrary},
                       index=index)
+    if source_type:
+        source_types = np.full(len(index), source_type)
+        df['type'] = source_types
+
     panel = pd.Panel.from_dict({0: df})
 
     return DataPanelSource(panel), panel

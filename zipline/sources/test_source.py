@@ -19,10 +19,9 @@ A source to be used in testing.
 
 import pytz
 
-from itertools import cycle
-from six.moves import filter, zip
+from six.moves import filter
 from datetime import datetime, timedelta
-import numpy as np
+import itertools
 
 from six.moves import range
 
@@ -53,9 +52,9 @@ def create_trade(sid, price, amount, datetime, source_id="test_factory"):
 
 
 @with_environment()
-def date_gen(start=datetime(2006, 6, 6, 12, tzinfo=pytz.utc),
+def date_gen(start,
+             end,
              delta=timedelta(minutes=1),
-             count=100,
              repeats=None,
              env=None):
     """
@@ -88,7 +87,7 @@ def date_gen(start=datetime(2006, 6, 6, 12, tzinfo=pytz.utc),
 
     # yield count trade events, all on trading days, and
     # during trading hours.
-    for i in range(count):
+    while cur < end:
         if repeats:
             for j in range(repeats):
                 yield cur
@@ -96,22 +95,6 @@ def date_gen(start=datetime(2006, 6, 6, 12, tzinfo=pytz.utc),
             yield cur
 
         cur = advance_current(cur)
-
-
-def mock_prices(count):
-    """
-    Utility to generate a stream of mock prices. By default
-    cycles through values from 0.0 to 10.0, n times.
-    """
-    return (float(i % 10) + 1.0 for i in range(count))
-
-
-def mock_volumes(count):
-    """
-    Utility to generate a set of volumes. By default cycles
-    through values from 100 to 1000, incrementing by 50.
-    """
-    return ((i * 50) % 900 + 100 for i in range(count))
 
 
 class SpecificEquityTrades(object):
@@ -128,42 +111,60 @@ class SpecificEquityTrades(object):
     delta  : timedelta between internal events
     filter : filter to remove the sids
     """
-
-    def __init__(self, *args, **kwargs):
+    @with_environment()
+    def __init__(self, env=None, *args, **kwargs):
         # We shouldn't get any positional arguments.
         assert len(args) == 0
 
         # Default to None for event_list and filter.
         self.event_list = kwargs.get('event_list')
         self.filter = kwargs.get('filter')
-
         if self.event_list is not None:
             # If event_list is provided, extract parameters from there
             # This isn't really clean and ultimately I think this
             # class should serve a single purpose (either take an
             # event_list or autocreate events).
             self.count = kwargs.get('count', len(self.event_list))
-            self.sids = kwargs.get(
-                'sids',
-                np.unique([event.sid for event in self.event_list]).tolist())
             self.start = kwargs.get('start', self.event_list[0].dt)
-            self.end = kwargs.get('start', self.event_list[-1].dt)
+            self.end = kwargs.get('end', self.event_list[-1].dt)
             self.delta = kwargs.get(
                 'delta',
                 self.event_list[1].dt - self.event_list[0].dt)
             self.concurrent = kwargs.get('concurrent', False)
 
+            self.identifiers = kwargs.get(
+                'sids',
+                set(event.sid for event in self.event_list)
+            )
+            env.update_asset_finder(identifiers=self.identifiers)
+            self.sids = [
+                env.asset_finder.retrieve_asset_by_identifier(identifier).sid
+                for identifier in self.identifiers
+            ]
+            for event in self.event_list:
+                event.sid = env.asset_finder.\
+                    retrieve_asset_by_identifier(event.sid).sid
+
         else:
             # Unpack config dictionary with default values.
             self.count = kwargs.get('count', 500)
-            self.sids = kwargs.get('sids', [1, 2])
             self.start = kwargs.get(
                 'start',
+                datetime(2008, 6, 6, 15, tzinfo=pytz.utc))
+            self.end = kwargs.get(
+                'end',
                 datetime(2008, 6, 6, 15, tzinfo=pytz.utc))
             self.delta = kwargs.get(
                 'delta',
                 timedelta(minutes=1))
             self.concurrent = kwargs.get('concurrent', False)
+
+            self.identifiers = kwargs.get('sids', [1, 2])
+            env.update_asset_finder(identifiers=self.identifiers)
+            self.sids = [
+                env.asset_finder.retrieve_asset_by_identifier(identifier).sid
+                for identifier in self.identifiers
+            ]
 
         # Hash_value for downstream sorting.
         self.arg_string = hash_args(*args, **kwargs)
@@ -201,30 +202,32 @@ class SpecificEquityTrades(object):
             if self.concurrent:
                 # in this context the count is the number of
                 # trades per sid, not the total.
-                dates = date_gen(
-                    count=self.count,
+                date_generator = date_gen(
                     start=self.start,
+                    end=self.end,
                     delta=self.delta,
                     repeats=len(self.sids),
                 )
             else:
-                dates = date_gen(
-                    count=self.count,
+                date_generator = date_gen(
                     start=self.start,
+                    end=self.end,
                     delta=self.delta
                 )
 
-            prices = mock_prices(self.count)
-            volumes = mock_volumes(self.count)
+            source_id = self.get_hash()
 
-            sids = cycle(self.sids)
-
-            # Combine the iterators into a single iterator of arguments
-            arg_gen = zip(sids, prices, volumes, dates)
-
-            # Convert argument packages into events.
-            unfiltered = (create_trade(*args, source_id=self.get_hash())
-                          for args in arg_gen)
+            unfiltered = (
+                create_trade(
+                    sid=sid,
+                    price=float(i % 10) + 1.0,
+                    amount=(i * 50) % 900 + 100,
+                    datetime=date,
+                    source_id=source_id,
+                ) for (i, date), sid in itertools.product(
+                    enumerate(date_generator), self.sids
+                )
+            )
 
         # If we specified a sid filter, filter out elements that don't
         # match the filter.

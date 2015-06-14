@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from logbook import Logger, Processor
 from pandas.tslib import normalize_date
 
@@ -21,7 +22,6 @@ from zipline.protocol import (
     SIDData,
     DATASOURCE_TYPE
 )
-from zipline.gens.utils import hash_args
 
 log = Logger('Trade Simulation')
 
@@ -32,13 +32,6 @@ class AlgorithmSimulator(object):
         'minute': 'minute_perf',
         'daily': 'daily_perf'
     }
-
-    def get_hash(self):
-        """
-        There should only ever be one TSC in the system, so
-        we don't bother passing args into the hash.
-        """
-        return self.__class__.__name__ + hash_args()
 
     def __init__(self, algo, sim_params):
 
@@ -78,17 +71,6 @@ class AlgorithmSimulator(object):
                 record.extra['algo_dt'] = self.simulation_dt
         self.processor = Processor(inject_algo_dt)
 
-    @property
-    def perf_key(self):
-        return self.EMISSION_TO_PERF_KEY_MAP[
-            self.algo.perf_tracker.emission_rate]
-
-    def _process_event(self, blotter_process_trade, perf_process_event, event):
-        for txn, order in blotter_process_trade(event):
-            perf_process_event(txn)
-            perf_process_event(order)
-        perf_process_event(event)
-
     def transform(self, stream_in):
         """
         Main generator work loop.
@@ -117,10 +99,12 @@ class AlgorithmSimulator(object):
                         if event.type == DATASOURCE_TYPE.SPLIT:
                             self.algo.blotter.process_split(event)
 
-                        elif event.type in (DATASOURCE_TYPE.TRADE,
-                                            DATASOURCE_TYPE.CUSTOM):
+                        elif event.type == DATASOURCE_TYPE.TRADE:
                             self.update_universe(event)
-                        self.algo.perf_tracker.process_event(event)
+                            self.algo.perf_tracker.process_trade(event)
+                        elif event.type == DATASOURCE_TYPE.CUSTOM:
+                            self.update_universe(event)
+
                 else:
                     message = self._process_snapshot(
                         date,
@@ -213,47 +197,127 @@ class AlgorithmSimulator(object):
         #
         # Done here, to allow for perf_tracker or blotter to be swapped out
         # or changed in between snapshots.
-        perf_process_event = self.algo.perf_tracker.process_event
+        perf_process_trade = self.algo.perf_tracker.process_trade
+        perf_process_transaction = self.algo.perf_tracker.process_transaction
+        perf_process_order = self.algo.perf_tracker.process_order
+        perf_process_benchmark = self.algo.perf_tracker.process_benchmark
+        perf_process_split = self.algo.perf_tracker.process_split
+        perf_process_dividend = self.algo.perf_tracker.process_dividend
+        perf_process_commission = self.algo.perf_tracker.process_commission
+        perf_process_close_position = \
+            self.algo.perf_tracker.process_close_position
         blotter_process_trade = self.algo.blotter.process_trade
-        process_event = self._process_event
+        blotter_process_benchmark = self.algo.blotter.process_benchmark
+
+        # Containers for the snapshotted events, so that the events are
+        # processed in a predictable order, without relying on the sorted order
+        # of the individual sources.
+
+        # There is only one benchmark per snapshot, will be set to the current
+        # benchmark iff it occurs.
+        benchmark = None
+        # trades and customs are initialized as a list since process_snapshot
+        # is most often called on market bars, which could contain trades or
+        # custom events.
+        trades = []
+        customs = []
+        closes = []
+
+        # splits and dividends are processed once a day.
+        #
+        # The avoidance of creating the list every time this is called is more
+        # to attempt to show that this is the infrequent case of the method,
+        # since the performance benefit from deferring the list allocation is
+        # marginal.  splits list will be allocated when a split occurs in the
+        # snapshot.
+        splits = None
+        # dividends list will be allocated when a dividend occurs in the
+        # snapshot.
+        dividends = None
 
         for event in snapshot:
-
             if event.type == DATASOURCE_TYPE.TRADE:
-                self.update_universe(event)
-                any_trade_occurred = True
-
+                trades.append(event)
             elif event.type == DATASOURCE_TYPE.BENCHMARK:
-                benchmark_event_occurred = True
-
-            elif event.type == DATASOURCE_TYPE.CUSTOM:
-                self.update_universe(event)
-
+                benchmark = event
             elif event.type == DATASOURCE_TYPE.SPLIT:
+                if splits is None:
+                    splits = []
+                splits.append(event)
+            elif event.type == DATASOURCE_TYPE.CUSTOM:
+                customs.append(event)
+            elif event.type == DATASOURCE_TYPE.DIVIDEND:
+                if dividends is None:
+                    dividends = []
+                dividends.append(event)
+            elif event.type == DATASOURCE_TYPE.CLOSE_POSITION:
+                closes.append(event)
+            else:
+                raise log.warn("Unrecognized event=%s".format(event))
+
+        # Handle benchmark first.
+        #
+        # Internal broker implementation depends on the benchmark being
+        # processed first so that transactions and commissions reported from
+        # the broker can be injected.
+        if benchmark is not None:
+            benchmark_event_occurred = True
+            perf_process_benchmark(benchmark)
+            for txn, order in blotter_process_benchmark(benchmark):
+                if txn.type == DATASOURCE_TYPE.TRANSACTION:
+                    perf_process_transaction(txn)
+                elif txn.type == DATASOURCE_TYPE.COMMISSION:
+                    perf_process_commission(txn)
+                perf_process_order(order)
+
+        for trade in trades:
+            self.update_universe(trade)
+            any_trade_occurred = True
+            if instant_fill:
+                events_to_be_processed.append(trade)
+            else:
+                for txn, order in blotter_process_trade(trade):
+                    if txn.type == DATASOURCE_TYPE.TRANSACTION:
+                        perf_process_transaction(txn)
+                    elif txn.type == DATASOURCE_TYPE.COMMISSION:
+                        perf_process_commission(txn)
+                    perf_process_order(order)
+                perf_process_trade(trade)
+
+        for custom in customs:
+            self.update_universe(custom)
+
+        for close in closes:
+            self.update_universe(close)
+            perf_process_close_position(close)
+
+        if splits is not None:
+            for split in splits:
                 # process_split is not assigned to a variable since it is
                 # called rarely compared to the other event processors.
-                self.algo.blotter.process_split(event)
+                self.algo.blotter.process_split(split)
+                perf_process_split(split)
 
-            if not instant_fill:
-                process_event(blotter_process_trade,
-                              perf_process_event,
-                              event)
-            else:
-                events_to_be_processed.append(event)
+        if dividends is not None:
+            for dividend in dividends:
+                perf_process_dividend(dividend)
 
         if any_trade_occurred:
             new_orders = self._call_handle_data()
             for order in new_orders:
-                perf_process_event(order)
+                perf_process_order(order)
 
         if instant_fill:
             # Now that handle_data has been called and orders have been placed,
             # process the event stream to fill user orders based on the events
             # from this snapshot.
-            for event in events_to_be_processed:
-                process_event(blotter_process_trade,
-                              perf_process_event,
-                              event)
+            for trade in events_to_be_processed:
+                for txn, order in blotter_process_trade(trade):
+                    if txn is not None:
+                        perf_process_transaction(txn)
+                    if order is not None:
+                        perf_process_order(order)
+                perf_process_trade(trade)
 
         if benchmark_event_occurred:
             return self.get_message(dt)

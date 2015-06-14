@@ -44,12 +44,11 @@
   > running with minute data, then this will calculate the number of minutes in
   > those days, accounting for early closes and the current time and apply the
   > transform over the set of minutes. `returns` takes no parameters and will
-  > return the daily returns of the given security.
+  > return the daily returns of the given asset.
 
   > Example:
 ```python
-# The standard deviation of the price in the last 3 days.
-data[security].stdev(3)
+data[security].stddev(3)
 ```
 
 ### New fields in Performance Period [PR464](https://github.com/quantopian/zipline/pull/464)
