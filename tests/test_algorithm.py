@@ -23,6 +23,7 @@ from unittest import TestCase
 import numpy as np
 import pandas as pd
 
+from zipline.assets import AssetFinder
 from zipline.utils.test_utils import (
     nullctx,
     setup_logger,
@@ -37,6 +38,7 @@ from zipline.errors import (
     TradingControlViolation,
     AccountControlViolation,
     SymbolNotFound,
+    RootSymbolNotFound,
 )
 from zipline.test_algorithms import (
     access_account_in_init,
@@ -87,9 +89,7 @@ from zipline.sources import (SpecificEquityTrades,
                              DataFrameSource,
                              DataPanelSource,
                              RandomWalkSource)
-from zipline.assets import (
-    Equity, Future
-)
+from zipline.assets import Equity
 
 from zipline.finance.execution import LimitOrder
 from zipline.finance.trading import SimulationParameters
@@ -138,7 +138,6 @@ class TestMiscellaneousAPI(TestCase):
         sids = [1, 2]
         self.sim_params = factory.create_simulation_parameters(
             num_days=2,
-            sids=sids,
             data_frequency='minute',
             emission_rate='minute',
         )
@@ -305,49 +304,106 @@ class TestMiscellaneousAPI(TestCase):
                     1: {'symbol': 'PLAY',
                         'asset_type': 'equity',
                         'start_date': '2005-01-01',
-                        'end_date': '2006-01-01'},
-                    2: {'symbol': 'OMG15',
-                        'asset_type': 'future'}}
+                        'end_date': '2006-01-01'}}
         algo = TradingAlgorithm(asset_metadata=metadata)
 
         # Test before either PLAY existed
         algo.datetime = pd.Timestamp('2001-12-01', tz='UTC')
-        self.assertEqual(2, algo.symbol('OMG15'))
         with self.assertRaises(SymbolNotFound):
             algo.symbol('PLAY')
         with self.assertRaises(SymbolNotFound):
-            algo.symbols('PLAY', 'OMG15')
+            algo.symbols('PLAY')
 
         # Test when first PLAY exists
         algo.datetime = pd.Timestamp('2002-12-01', tz='UTC')
-        self.assertEqual(2, algo.symbol('OMG15'))
-        self.assertEqual(0, algo.symbol('PLAY'))
-        list_result = algo.symbols('PLAY', 'OMG15')
+        list_result = algo.symbols('PLAY')
         self.assertEqual(0, list_result[0])
-        self.assertEqual(2, list_result[1])
 
         # Test after first PLAY ends
         algo.datetime = pd.Timestamp('2004-12-01', tz='UTC')
-        self.assertEqual(2, algo.symbol('OMG15'))
         self.assertEqual(0, algo.symbol('PLAY'))
 
         # Test after second PLAY begins
         algo.datetime = pd.Timestamp('2005-12-01', tz='UTC')
-        self.assertEqual(2, algo.symbol('OMG15'))
         self.assertEqual(1, algo.symbol('PLAY'))
 
         # Test after second PLAY ends
         algo.datetime = pd.Timestamp('2006-12-01', tz='UTC')
-        self.assertEqual(2, algo.symbol('OMG15'))
         self.assertEqual(1, algo.symbol('PLAY'))
-        list_result = algo.symbols('PLAY', 'OMG15')
+        list_result = algo.symbols('PLAY')
         self.assertEqual(1, list_result[0])
-        self.assertEqual(2, list_result[1])
 
         # Test lookup SID
         self.assertIsInstance(algo.sid(0), Equity)
         self.assertIsInstance(algo.sid(1), Equity)
-        self.assertIsInstance(algo.sid(2), Future)
+
+    def test_future_chain(self):
+        """ Tests the future_chain API function.
+        """
+
+        metadata = {
+            0: {
+                'symbol': 'CLG06',
+                'root_symbol': 'CL',
+                'asset_type': 'future',
+                'start_date': pd.Timestamp('2005-12-01', tz='UTC'),
+                'notice_date': pd.Timestamp('2005-12-20', tz='UTC'),
+                'expiration_date': pd.Timestamp('2006-01-20', tz='UTC')},
+            1: {
+                'root_symbol': 'CL',
+                'symbol': 'CLK06',
+                'asset_type': 'future',
+                'start_date': pd.Timestamp('2005-12-01', tz='UTC'),
+                'notice_date': pd.Timestamp('2006-03-20', tz='UTC'),
+                'expiration_date': pd.Timestamp('2006-04-20', tz='UTC')},
+            2: {
+                'symbol': 'CLQ06',
+                'root_symbol': 'CL',
+                'asset_type': 'future',
+                'start_date': pd.Timestamp('2005-12-01', tz='UTC'),
+                'notice_date': pd.Timestamp('2006-06-20', tz='UTC'),
+                'expiration_date': pd.Timestamp('2006-07-20', tz='UTC')},
+            3: {
+                'symbol': 'CLX06',
+                'root_symbol': 'CL',
+                'asset_type': 'future',
+                'start_date': pd.Timestamp('2006-02-01', tz='UTC'),
+                'notice_date': pd.Timestamp('2006-09-20', tz='UTC'),
+                'expiration_date': pd.Timestamp('2006-10-20', tz='UTC')}
+        }
+
+        algo = TradingAlgorithm(asset_metadata=metadata)
+        algo.datetime = pd.Timestamp('2006-12-01', tz='UTC')
+
+        # Check that the fields of the FutureChain object are set correctly
+        cl = algo.future_chain('CL')
+        self.assertEqual(cl.root_symbol, 'CL')
+        self.assertEqual(cl.as_of_date, algo.datetime)
+
+        # Check the fields are set correctly if an as_of_date is supplied
+        as_of_date = pd.Timestamp('1952-08-11', tz='UTC')
+
+        cl = algo.future_chain('CL', as_of_date=as_of_date)
+        self.assertEqual(cl.root_symbol, 'CL')
+        self.assertEqual(cl.as_of_date, as_of_date)
+
+        cl = algo.future_chain('CL', as_of_date='1952-08-11')
+        self.assertEqual(cl.root_symbol, 'CL')
+        self.assertEqual(cl.as_of_date, as_of_date)
+
+        # Check that weird capitalization is corrected
+        cl = algo.future_chain('cL')
+        self.assertEqual(cl.root_symbol, 'CL')
+
+        cl = algo.future_chain('cl')
+        self.assertEqual(cl.root_symbol, 'CL')
+
+        # Check that invalid root symbols raise RootSymbolNotFound
+        with self.assertRaises(RootSymbolNotFound):
+            algo.future_chain('CLZ')
+
+        with self.assertRaises(RootSymbolNotFound):
+            algo.future_chain('')
 
 
 class TestTransformAlgorithm(TestCase):
@@ -598,13 +654,19 @@ class TestAlgoScript(TestCase):
 
     def test_api_get_environment(self):
         platform = 'zipline'
+        metadata = {0: {'symbol': 'TEST',
+                        'asset_type': 'equity'}}
         algo = TradingAlgorithm(script=api_get_environment_algo,
+                                asset_metadata=metadata,
                                 platform=platform)
         algo.run(self.df)
         self.assertEqual(algo.environment, platform)
 
     def test_api_symbol(self):
-        algo = TradingAlgorithm(script=api_symbol_algo)
+        metadata = {0: {'symbol': 'TEST',
+                        'asset_type': 'equity'}}
+        algo = TradingAlgorithm(script=api_symbol_algo,
+                                asset_metadata=metadata)
         algo.run(self.df)
 
     def test_fixed_slippage(self):
@@ -1216,16 +1278,22 @@ class TestTradingControls(TestCase):
         df_source, _ = factory.create_test_df_source(self.sim_params)
         metadata = {0: {'start_date': '1990-01-01',
                         'end_date': '2020-01-01'}}
-        algo = SetAssetDateBoundsAlgorithm(asset_metadata=metadata,
-                                           sim_params=self.sim_params,)
+        asset_finder = AssetFinder()
+        algo = SetAssetDateBoundsAlgorithm(
+            asset_finder=asset_finder,
+            asset_metadata=metadata,
+            sim_params=self.sim_params,)
         algo.run(df_source)
 
         # Run the algorithm with a sid that has already ended
         df_source, _ = factory.create_test_df_source(self.sim_params)
         metadata = {0: {'start_date': '1989-01-01',
                         'end_date': '1990-01-01'}}
-        algo = SetAssetDateBoundsAlgorithm(asset_metadata=metadata,
-                                           sim_params=self.sim_params,)
+        asset_finder = AssetFinder()
+        algo = SetAssetDateBoundsAlgorithm(
+            asset_finder=asset_finder,
+            asset_metadata=metadata,
+            sim_params=self.sim_params,)
         with self.assertRaises(TradingControlViolation):
             algo.run(df_source)
 
@@ -1233,8 +1301,10 @@ class TestTradingControls(TestCase):
         df_source, _ = factory.create_test_df_source(self.sim_params)
         metadata = {0: {'start_date': '2020-01-01',
                         'end_date': '2021-01-01'}}
-        algo = SetAssetDateBoundsAlgorithm(asset_metadata=metadata,
-                                           sim_params=self.sim_params,)
+        algo = SetAssetDateBoundsAlgorithm(
+            asset_finder=asset_finder,
+            asset_metadata=metadata,
+            sim_params=self.sim_params,)
         with self.assertRaises(TradingControlViolation):
             algo.run(df_source)
 

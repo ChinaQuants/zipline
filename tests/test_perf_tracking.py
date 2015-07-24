@@ -34,6 +34,7 @@ import pandas as pd
 import numpy as np
 from six.moves import range, zip
 
+from zipline.assets import AssetFinder
 import zipline.utils.factory as factory
 import zipline.finance.performance as perf
 from zipline.finance.slippage import Transaction, create_transaction
@@ -861,6 +862,56 @@ class TestDividendPerformance(unittest.TestCase):
         cumulative_cash_flows = \
             [event['cumulative_perf']['capital_used'] for event in results]
         self.assertEqual(cumulative_cash_flows, [0, 0, 0, 0, 0])
+
+    @with_environment()
+    def test_no_dividend_at_simulation_end(self, env=None):
+        # post some trades in the market
+        events = factory.create_trade_history(
+            1,
+            [10, 10, 10, 10, 10],
+            [100, 100, 100, 100, 100],
+            oneday,
+            self.sim_params
+        )
+        dividend = factory.create_dividend(
+            1,
+            10.00,
+            # declared date, when the algorithm finds out about
+            # the dividend
+            events[-3].dt,
+            # ex_date, the date before which the algorithm must hold stock
+            # to receive the dividend
+            events[-2].dt,
+            # pay date, when the algorithm receives the dividend.
+            # This pays out on the day after the last event
+            env.next_trading_day(events[-1].dt)
+        )
+
+        # Set the last day to be the last event
+        self.sim_params.period_end = events[-1].dt
+        self.sim_params._update_internal()
+
+        # Simulate a transaction being filled prior to the ex_date.
+        txns = [create_txn(events[0], 10.0, 100)]
+        results = calculate_results(
+            self,
+            events,
+            dividend_events=[dividend],
+            txns=txns,
+        )
+
+        self.assertEqual(len(results), 5)
+        cumulative_returns = \
+            [event['cumulative_perf']['returns'] for event in results]
+        self.assertEqual(cumulative_returns, [0.0, 0.0, 0.0, 0.0, 0.0])
+        daily_returns = [event['daily_perf']['returns'] for event in results]
+        self.assertEqual(daily_returns, [0.0, 0.0, 0.0, 0.0, 0.0])
+        cash_flows = [event['daily_perf']['capital_used'] for event in results]
+        self.assertEqual(cash_flows, [-1000, 0, 0, 0, 0])
+        cumulative_cash_flows = \
+            [event['cumulative_perf']['capital_used'] for event in results]
+        self.assertEqual(cumulative_cash_flows,
+                         [-1000, -1000, -1000, -1000, -1000])
 
 
 class TestDividendPerformanceHolidayStyle(TestDividendPerformance):
@@ -1898,8 +1949,7 @@ class TestPerformanceTracker(unittest.TestCase):
                     tracker.process_order(event)
                 elif event.type == zp.DATASOURCE_TYPE.TRANSACTION:
                     tracker.process_transaction(event)
-            tracker.handle_minute_close(date)
-            msg = tracker.to_dict()
+            msg, _ = tracker.handle_minute_close(date)
             messages[date] = msg
 
         self.assertEquals(2, len(messages))
@@ -1969,6 +2019,46 @@ class TestPerformanceTracker(unittest.TestCase):
             elif event.sid == 3:
                 # Test not-owned SID
                 self.assertIsNone(txn)
+
+    def test_handle_sid_removed_from_universe(self):
+        # post some trades in the market
+        sim_params, _, _ = create_random_simulation_parameters()
+        events = factory.create_trade_history(
+            1,
+            [10, 10, 10, 10, 10],
+            [100, 100, 100, 100, 100],
+            oneday,
+            sim_params
+        )
+
+        # Create a tracker and a dividend
+        perf_tracker = perf.PerformanceTracker(sim_params)
+        dividend = factory.create_dividend(
+            1,
+            10.00,
+            # declared date, when the algorithm finds out about
+            # the dividend
+            events[0].dt,
+            # ex_date, the date before which the algorithm must hold stock
+            # to receive the dividend
+            events[1].dt,
+            # pay date, when the algorithm receives the dividend.
+            events[2].dt
+        )
+        dividend_frame = pd.DataFrame(
+            [dividend.to_series(index=zp.DIVIDEND_FIELDS)],
+        )
+        perf_tracker.update_dividends(dividend_frame)
+
+        # Ensure that the dividend is in the tracker
+        self.assertIn(1, perf_tracker.dividend_frame['sid'].values)
+
+        # Inform the tracker that sid 1 has been removed from the universe
+        perf_tracker.handle_sid_removed_from_universe(1)
+
+        # Ensure that the dividend for sid 1 has been removed from dividend
+        # frame
+        self.assertNotIn(1, perf_tracker.dividend_frame['sid'].values)
 
     def test_serialization(self):
         start_dt = datetime(year=2008,
@@ -2042,7 +2132,10 @@ class TestPositionTracker(unittest.TestCase):
         metadata = {1: {'asset_type': 'equity'},
                     2: {'asset_type': 'future',
                         'contract_multiplier': 1000}}
-        env.update_asset_finder(asset_metadata=metadata)
+        asset_finder = AssetFinder()
+        env.update_asset_finder(
+            asset_finder=asset_finder,
+            asset_metadata=metadata)
         pt = perf.PositionTracker()
         dt = pd.Timestamp("1984/03/06 3:00PM")
         pos1 = perf.Position(1, amount=np.float64(100.0),

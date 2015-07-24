@@ -22,7 +22,6 @@ import pandas as pd
 from zipline.gens.utils import hash_args
 
 from zipline.sources.data_source import DataSource
-from zipline.finance.trading import with_environment
 
 
 class DataFrameSource(DataSource):
@@ -37,22 +36,16 @@ class DataFrameSource(DataSource):
         Bars where the price is nan are filtered out.
     """
 
-    @with_environment()
-    def __init__(self, data, env=None, **kwargs):
+    def __init__(self, data, **kwargs):
         assert isinstance(data.index, pd.tseries.index.DatetimeIndex)
-
+        # Only accept integer SIDs as the items of the DataFrame
+        assert isinstance(data.columns, pd.Int64Index)
+        # TODO is ffilling correct/necessary?
+        # Forward fill prices
         self.data = data.fillna(method='ffill')
         # Unpack config dictionary with default values.
         self.start = kwargs.get('start', self.data.index[0])
         self.end = kwargs.get('end', self.data.index[-1])
-
-        # Remap sids based on the trading environment
-        self.identifiers = kwargs.get('sids', self.data.columns)
-        env.update_asset_finder(identifiers=self.identifiers)
-        self.data.columns = [
-            env.asset_finder.retrieve_asset_by_identifier(identifier).sid
-            for identifier in self.data.columns
-        ]
         self.sids = self.data.columns
 
         # Hash_value for downstream sorting.
@@ -78,22 +71,21 @@ class DataFrameSource(DataSource):
     def raw_data_gen(self):
         for dt, series in self.data.iterrows():
             for sid, price in series.iteritems():
-                if sid in self.sids:
-                    # Skip SIDs that can not be forward filled
-                    if np.isnan(price) and \
-                       sid not in self.started_sids:
-                        continue
-                    self.started_sids.add(sid)
+                # Skip SIDs that can not be forward filled
+                if np.isnan(price) and \
+                   sid not in self.started_sids:
+                    continue
+                self.started_sids.add(sid)
 
-                    event = {
-                        'dt': dt,
-                        'sid': sid,
-                        'price': price,
-                        # Just chose something large
-                        # if no volume available.
-                        'volume': 1e9,
-                    }
-                    yield event
+                event = {
+                    'dt': dt,
+                    'sid': sid,
+                    'price': price,
+                    # Just chose something large
+                    # if no volume available.
+                    'volume': 1e9,
+                }
+                yield event
 
     @property
     def raw_data(self):
@@ -115,23 +107,17 @@ class DataPanelSource(DataSource):
         Bars where the price is nan are filtered out.
     """
 
-    @with_environment()
-    def __init__(self, data, env=None, **kwargs):
+    def __init__(self, data, **kwargs):
         assert isinstance(data.major_axis, pd.tseries.index.DatetimeIndex)
-
+        # Only accept integer SIDs as the items of the Panel
+        assert isinstance(data.items, pd.Int64Index)
+        # TODO is ffilling correct/necessary?
+        # forward fill with volumes of 0
         self.data = data.fillna(value={'volume': 0})
         self.data = self.data.fillna(method='ffill')
         # Unpack config dictionary with default values.
         self.start = kwargs.get('start', self.data.major_axis[0])
         self.end = kwargs.get('end', self.data.major_axis[-1])
-
-        # Remap sids based on the trading environment
-        self.identifiers = kwargs.get('sids', self.data.items)
-        env.update_asset_finder(identifiers=self.identifiers)
-        self.data.items = [
-            env.asset_finder.retrieve_asset_by_identifier(identifier).sid
-            for identifier in self.data.items
-        ]
         self.sids = self.data.items
 
         # Hash_value for downstream sorting.
@@ -166,21 +152,20 @@ class DataPanelSource(DataSource):
         for dt in self.data.major_axis:
             df = self.data.major_xs(dt)
             for sid, series in df.iteritems():
-                if sid in self.sids:
-                    # Skip SIDs that can not be forward filled
-                    if np.isnan(series['price']) and \
-                       sid not in self.started_sids:
-                        continue
-                    self.started_sids.add(sid)
+                # Skip SIDs that can not be forward filled
+                if np.isnan(series['price']) and \
+                   sid not in self.started_sids:
+                    continue
+                self.started_sids.add(sid)
 
-                    event = {
-                        'dt': dt,
-                        'sid': sid,
-                    }
-                    for field_name, value in series.iteritems():
-                        event[field_name] = value
+                event = {
+                    'dt': dt,
+                    'sid': sid,
+                }
+                for field_name, value in series.iteritems():
+                    event[field_name] = value
 
-                    yield event
+                yield event
 
     @property
     def raw_data(self):

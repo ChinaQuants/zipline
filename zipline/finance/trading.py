@@ -136,7 +136,7 @@ class TradingEnvironment(object):
 
         self.exchange_tz = exchange_tz
 
-        self.asset_finder = AssetFinder(trading_calendar=env_trading_calendar)
+        self.asset_finder = AssetFinder()
 
     def __enter__(self, *args, **kwargs):
         global environment
@@ -177,10 +177,8 @@ class TradingEnvironment(object):
         :param identifiers: A list of identifiers to be inserted
         :return:
         """
-        populate = False
         if clear_metadata:
             self.asset_finder.clear_metadata()
-            populate = True
 
         if asset_finder is not None:
             if not isinstance(asset_finder, AssetFinder):
@@ -190,14 +188,9 @@ class TradingEnvironment(object):
         if asset_metadata is not None:
             self.asset_finder.clear_metadata()
             self.asset_finder.consume_metadata(asset_metadata)
-            populate = True
 
         if identifiers is not None:
             self.asset_finder.consume_identifiers(identifiers)
-            populate = True
-
-        if populate:
-            self.asset_finder.populate_cache()
 
     def normalize_date(self, test_date):
         test_date = pd.Timestamp(test_date, tz='UTC')
@@ -440,8 +433,7 @@ class SimulationParameters(object):
     def __init__(self, period_start, period_end,
                  capital_base=10e3,
                  emission_rate='daily',
-                 data_frequency='daily',
-                 sids=None):
+                 data_frequency='daily'):
 
         self.period_start = period_start
         self.period_end = period_end
@@ -449,7 +441,6 @@ class SimulationParameters(object):
 
         self.emission_rate = emission_rate
         self.data_frequency = data_frequency
-        self.sids = sids
 
         # copied to algorithm's environment for runtime access
         self.arena = 'backtest'

@@ -39,7 +39,6 @@ from zipline.errors import (
     UnsupportedCommissionModel,
     UnsupportedOrderParameters,
     UnsupportedSlippageModel,
-    SidNotFound,
 )
 
 from zipline.finance.trading import TradingEnvironment
@@ -66,6 +65,7 @@ from zipline.finance.slippage import (
     transact_partial
 )
 from zipline.assets import Asset, Future
+from zipline.assets.futures import FutureChain
 from zipline.gens.composites import date_sorted_sources
 from zipline.gens.tradesimulation import AlgorithmSimulator
 from zipline.sources import DataFrameSource, DataPanelSource
@@ -129,7 +129,7 @@ class TradingAlgorithm(object):
             script : str
                 Algoscript that contains initialize and
                 handle_data function definition.
-            data_frequency : str (daily, hourly or minutely)
+            data_frequency : {'daily', 'minute'}
                The duration of the bars.
             capital_base : float <default: 1.0e5>
                How much capital to start with.
@@ -157,8 +157,6 @@ class TradingAlgorithm(object):
                 Any asset identifiers that are not provided in the
                 asset_metadata, but will be traded by this TradingAlgorithm
         """
-        self.datetime = None
-
         self.sources = []
 
         # List of trading controls to be used to validate orders.
@@ -208,6 +206,9 @@ class TradingAlgorithm(object):
         self.blotter = kwargs.pop('blotter', None)
         if not self.blotter:
             self.blotter = Blotter()
+
+        # Set the dt initally to the period start by forcing it to change
+        self.on_dt_changed(self.sim_params.period_start)
 
         self.portfolio_needs_update = True
         self.account_needs_update = True
@@ -461,10 +462,23 @@ class TradingAlgorithm(object):
  __init__().""", UserWarning)
                 overwrite_sim_params = False
         elif isinstance(source, pd.DataFrame):
-            # if DataFrame provided, wrap in DataFrameSource
-            source = DataFrameSource(source)
+            # if DataFrame provided, map columns to sids and wrap
+            # in DataFrameSource
+            copy_frame = source.copy()
+            copy_frame.columns = \
+                self.asset_finder.map_identifier_index_to_sids(
+                    source.columns, source.index[0]
+                )
+            source = DataFrameSource(copy_frame)
+
         elif isinstance(source, pd.Panel):
-            source = DataPanelSource(source)
+            # If Panel provided, map items to sids and wrap
+            # in DataPanelSource
+            copy_panel = source.copy()
+            copy_panel.items = self.asset_finder.map_identifier_index_to_sids(
+                source.items, source.major_axis[0]
+            )
+            source = DataPanelSource(copy_panel)
 
         if isinstance(source, list):
             self.set_sources(source)
@@ -477,22 +491,21 @@ class TradingAlgorithm(object):
                 self.sim_params.period_start = source.start
             if hasattr(source, 'end'):
                 self.sim_params.period_end = source.end
-            # The sids field of the source is the canonical reference for
-            # sids in this run
-            all_sids = [sid for s in self.sources for sid in s.sids]
-            self.sim_params.sids = set(all_sids)
-            # Check that all sids from the source are accounted for in
-            # the AssetFinder
-            for sid in self.sim_params.sids:
-                try:
-                    self.asset_finder.retrieve_asset(sid)
-                except SidNotFound:
-                    warnings.warn("No Asset found for sid '%s'. Make sure "
-                                  "that the correct identifiers and asset "
-                                  "metadata are passed to __init__()." % sid)
             # Changing period_start and period_close might require updating
             # of first_open and last_close.
             self.sim_params._update_internal()
+
+        # The sids field of the source is the reference for the universe at
+        # the start of the run
+        self._current_universe = set()
+        for source in self.sources:
+            for sid in source.sids:
+                self._current_universe.add(sid)
+        # Check that all sids from the source are accounted for in
+        # the AssetFinder. This retrieve call will raise an exception if the
+        # sid is not found.
+        for sid in self._current_universe:
+            self.asset_finder.retrieve_asset(sid)
 
         # force a reset of the performance tracker, in case
         # this is a repeat run of the algorithm.
@@ -505,20 +518,19 @@ class TradingAlgorithm(object):
         if self.history_specs:
             self.history_container = self.history_container_class(
                 self.history_specs,
-                self.sim_params.sids,
+                self.current_universe(),
                 self.sim_params.first_open,
                 self.sim_params.data_frequency,
             )
 
-        with ZiplineAPI(self):
-            # loop through simulated_trading, each iteration returns a
-            # perf dictionary
-            perfs = []
-            for perf in self.gen:
-                perfs.append(perf)
+        # loop through simulated_trading, each iteration returns a
+        # perf dictionary
+        perfs = []
+        for perf in self.gen:
+            perfs.append(perf)
 
-            # convert perf dict to pandas dataframe
-            daily_stats = self._create_daily_stats(perfs)
+        # convert perf dict to pandas dataframe
+        daily_stats = self._create_daily_stats(perfs)
 
         self.analyze(daily_stats)
 
@@ -651,11 +663,9 @@ class TradingAlgorithm(object):
         Default symbol lookup for any source that directly maps the
         symbol to the Asset (e.g. yahoo finance).
         """
-        asset, _ = self.asset_finder.lookup_generic(
-            asset_convertible_or_iterable=symbol_str,
-            as_of_date=self.datetime,
-            )
-        return asset
+        return self.asset_finder.lookup_symbol_resolve_multiple(
+            symbol_str,
+            as_of_date=self.datetime)
 
     @api_method
     def symbols(self, *args):
@@ -672,6 +682,36 @@ class TradingAlgorithm(object):
         to the Asset.
         """
         return self.asset_finder.retrieve_asset(a_sid)
+
+    @api_method
+    def future_chain(self, root_symbol, as_of_date=None):
+        """ Look up a future chain with the specified parameters.
+
+        Parameters
+        ----------
+        root_symbol : str
+            The root symbol of a future chain.
+        as_of_date : datetime.datetime or pandas.Timestamp or str, optional
+            Date at which the chain determination is rooted. I.e. the
+            existing contract whose notice date is first after this date is
+            the primary contract, etc.
+
+        Returns
+        -------
+        FutureChain
+            The future chain matching the specified parameters.
+
+        Raises
+        ------
+        RootSymbolNotFound
+            If a future chain could not be found for the given root symbol.
+        """
+        return FutureChain(
+            asset_finder=self.asset_finder,
+            get_datetime=self.get_datetime,
+            root_symbol=root_symbol.upper(),
+            as_of_date=as_of_date
+        )
 
     def _calculate_order_value_amount(self, asset, value):
         """
@@ -1184,7 +1224,7 @@ class TradingAlgorithm(object):
         self.register_trading_control(LongOnly())
 
     def current_universe(self):
-        return self.sim_params.sids
+        return self._current_universe
 
     @classmethod
     def all_api_methods(cls):

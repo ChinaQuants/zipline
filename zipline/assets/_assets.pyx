@@ -19,6 +19,7 @@ Cythonized Asset object.
 cimport cython
 
 import numpy as np
+import warnings
 cimport numpy as np
 
 # IMPORTANT NOTE: You must change this template if you change
@@ -66,22 +67,6 @@ cdef class Asset:
 
     def __hash__(self):
         return self.sid_hash
-
-    property asset_start_date:
-        """
-        Alias for start_date to disambiguate from other `start_date`s in the
-        system.
-        """
-        def __get__(self):
-            return self.start_date
-
-    property asset_end_date:
-        """
-        Alias for end_date to disambiguate from other `end_date`s in the
-        system.
-        """
-        def __get__(self):
-            return self.end_date
 
     def __richcmp__(x, y, int op):
         """
@@ -203,9 +188,43 @@ cdef class Equity(Asset):
         params = ', '.join(strings)
         return 'Equity(%d, %s)' % (self.sid, params)
 
+    property security_start_date:
+        """
+        DEPRECATION: This property should be deprecated and is only present for
+        backwards compatibility
+        """
+        def __get__(self):
+            warnings.warn("The security_start_date property will soon be "
+            "retired. Please use the start_date property instead.",
+            DeprecationWarning)
+            return self.start_date
+
+    property security_end_date:
+        """
+        DEPRECATION: This property should be deprecated and is only present for
+        backwards compatibility
+        """
+        def __get__(self):
+            warnings.warn("The security_end_date property will soon be "
+            "retired. Please use the end_date property instead.",
+            DeprecationWarning)
+            return self.end_date
+
+    property security_name:
+        """
+        DEPRECATION: This property should be deprecated and is only present for
+        backwards compatibility
+        """
+        def __get__(self):
+            warnings.warn("The security_name property will soon be "
+            "retired. Please use the asset_name property instead.",
+            DeprecationWarning)
+            return self.asset_name
+
 
 cdef class Future(Asset):
 
+    cdef readonly object root_symbol
     cdef readonly object notice_date
     cdef readonly object expiration_date
     cdef readonly int contract_multiplier
@@ -213,6 +232,7 @@ cdef class Future(Asset):
     def __cinit__(self,
                   int sid, # sid is required
                   object symbol="",
+                  object root_symbol="",
                   object asset_name="",
                   object start_date=None,
                   object end_date=None,
@@ -222,6 +242,7 @@ cdef class Future(Asset):
                   object exchange="",
                   int contract_multiplier=1):
 
+        self.root_symbol         = root_symbol
         self.notice_date         = notice_date
         self.expiration_date     = expiration_date
         self.contract_multiplier = contract_multiplier
@@ -237,7 +258,7 @@ cdef class Future(Asset):
             return 'Future(%d)' % self.sid
 
     def __repr__(self):
-        attrs = ('symbol', 'asset_name', 'exchange',
+        attrs = ('symbol', 'root_symbol', 'asset_name', 'exchange',
                  'start_date', 'end_date', 'first_traded', 'notice_date',
                  'expiration_date', 'contract_multiplier')
         tuples = ((attr, repr(getattr(self, attr, None)))
@@ -255,6 +276,7 @@ cdef class Future(Asset):
         """
         return (self.__class__, (self.sid,
                                  self.symbol,
+                                 self.root_symbol,
                                  self.asset_name,
                                  self.start_date,
                                  self.end_date,
@@ -269,6 +291,7 @@ cdef class Future(Asset):
         Convert to a python dict.
         """
         super_dict = super(Future, self).to_dict()
+        super_dict['root_symbol'] = self.root_symbol
         super_dict['notice_date'] = self.notice_date
         super_dict['expiration_date'] = self.expiration_date
         super_dict['contract_multiplier'] = self.contract_multiplier

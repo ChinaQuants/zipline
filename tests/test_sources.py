@@ -14,7 +14,6 @@
 # limitations under the License.
 import pandas as pd
 import pytz
-from itertools import cycle
 import numpy as np
 
 from six import integer_types
@@ -26,7 +25,7 @@ from zipline.sources import (DataFrameSource,
                              DataPanelSource,
                              RandomWalkSource)
 from zipline.utils import tradingcalendar as calendar_nyse
-from zipline.finance.trading import with_environment
+from zipline.assets import AssetFinder
 
 
 class TestDataFrameSource(TestCase):
@@ -43,7 +42,7 @@ class TestDataFrameSource(TestCase):
 
     def test_df_sid_filtering(self):
         _, df = factory.create_test_df_source()
-        source = DataFrameSource(df, sids=[0])
+        source = DataFrameSource(df)
         assert 1 not in [event.sid for event in source], \
             "DataFrameSource should only stream selected sid 0, not sid 1."
 
@@ -63,8 +62,8 @@ class TestDataFrameSource(TestCase):
             self.assertTrue(isinstance(event['volume'], int))
             self.assertTrue(isinstance(event['arbitrary'], float))
 
-    @with_environment()
-    def test_yahoo_bars_to_panel_source(self, env=None):
+    def test_yahoo_bars_to_panel_source(self):
+        finder = AssetFinder()
         stocks = ['AAPL', 'GE']
         start = pd.datetime(1993, 1, 1, 0, 0, 0, 0, pytz.utc)
         end = pd.datetime(2002, 1, 1, 0, 0, 0, 0, pytz.utc)
@@ -75,22 +74,20 @@ class TestDataFrameSource(TestCase):
 
         check_fields = ['sid', 'open', 'high', 'low', 'close',
                         'volume', 'price']
-        source = DataPanelSource(data)
-        sids = [
-            asset.sid for asset in
-            [env.asset_finder.lookup_symbol(symbol, as_of_date=end)
-             for symbol in stocks]
-        ]
-        stocks_iter = cycle(sids)
+
+        copy_panel = data.copy()
+        sids = finder.map_identifier_index_to_sids(
+            data.items, data.major_axis[0]
+        )
+        copy_panel.items = sids
+        source = DataPanelSource(copy_panel)
         for event in source:
             for check_field in check_fields:
                 self.assertIn(check_field, event)
             self.assertTrue(isinstance(event['volume'], (integer_types)))
-            self.assertEqual(next(stocks_iter), event['sid'])
+            self.assertTrue(event['sid'] in sids)
 
-    @with_environment()
-    def test_nan_filter_dataframe(self, env=None):
-        env.update_asset_finder(identifiers=[4, 5])
+    def test_nan_filter_dataframe(self):
         dates = pd.date_range('1/1/2000', periods=2, freq='B', tz='UTC')
         df = pd.DataFrame(np.random.randn(2, 2),
                           index=dates,
@@ -108,9 +105,7 @@ class TestDataFrameSource(TestCase):
         self.assertEqual(5, event.sid)
         self.assertFalse(np.isnan(event.price))
 
-    @with_environment()
-    def test_nan_filter_panel(self, env=None):
-        env.update_asset_finder(identifiers=[4, 5])
+    def test_nan_filter_panel(self):
         dates = pd.date_range('1/1/2000', periods=2, freq='B', tz='UTC')
         df = pd.Panel(np.random.randn(2, 2, 2),
                       major_axis=dates,
