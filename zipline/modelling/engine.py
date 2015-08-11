@@ -27,6 +27,7 @@ from numpy import (
 )
 from pandas import (
     DataFrame,
+    date_range,
     MultiIndex,
 )
 
@@ -149,7 +150,12 @@ class NoOpFFCEngine(FFCEngine):
     """
 
     def factor_matrix(self, terms, start, end):
-        return DataFrame(index=[], columns=sorted(terms.keys()))
+        return DataFrame(
+            index=MultiIndex.from_product(
+                [date_range(start=start, end=end, freq='D'), ()],
+            ),
+            columns=sorted(terms.keys())
+        )
 
 
 class SimpleFFCEngine(object):
@@ -226,6 +232,12 @@ class SimpleFFCEngine(object):
         --------
         FFCEngine.factor_matrix
         """
+        if end_date <= start_date:
+            raise ValueError(
+                "start_date must be before end_date \n"
+                "start_date=%s, end_date=%s" % (start_date, end_date)
+            )
+
         graph = build_dependency_graph(terms.values())
         ordered_terms = topological_sort(graph)
         extra_row_counts = get_node_attributes(graph, 'extra_rows')
@@ -313,6 +325,10 @@ class SimpleFFCEngine(object):
         )
         assert lifetimes.index[extra_rows] == start_date
         assert lifetimes.index[-1] == end_date
+        if not lifetimes.columns.unique:
+            columns = lifetimes.columns
+            duplicated = columns[columns.duplicated()].unique()
+            raise AssertionError("Duplicated sids: %d" % duplicated)
 
         # Filter out columns that didn't exist between the requested start and
         # end dates.
@@ -452,13 +468,13 @@ class SimpleFFCEngine(object):
         bounds = add.accumulate(unioned.sum(axis=1))
         for dt_idx, dt_end in enumerate(bounds):
 
-            bounds = slice(dt_start, dt_end)
-            column_indices = nonzero_ys[bounds]
+            row_bounds = slice(dt_start, dt_end)
+            column_indices = nonzero_ys[row_bounds]
 
-            raw_dates_index[bounds] = dates[dt_idx]
-            raw_assets_index[bounds] = assets[column_indices]
+            raw_dates_index[row_bounds] = dates[dt_idx]
+            raw_assets_index[row_bounds] = assets[column_indices]
             for computed, output in zip(factor_data, factor_outputs):
-                output[bounds] = computed[dt_idx, column_indices]
+                output[row_bounds] = computed[dt_idx, column_indices]
 
             # Upper bound of current row becomes lower bound for next row.
             dt_start = dt_end

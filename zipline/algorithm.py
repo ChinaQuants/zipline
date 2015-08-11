@@ -211,16 +211,7 @@ class TradingAlgorithm(object):
         )
         # Pull in the environment's new AssetFinder for quick reference
         self.asset_finder = self.trading_environment.asset_finder
-
-        ffc_loader = kwargs.get('ffc_loader', None)
-        if ffc_loader is not None:
-            self.engine = SimpleFFCEngine(
-                ffc_loader,
-                self.trading_environment.trading_days,
-                self.asset_finder,
-            )
-        else:
-            self.engine = NoOpFFCEngine()
+        self.init_engine(kwargs.pop('ffc_loader', None))
 
         # Maps from name to Term
         self._filters = {}
@@ -307,6 +298,21 @@ class TradingAlgorithm(object):
         self.initialized = False
         self.initialize_args = args
         self.initialize_kwargs = kwargs
+
+    def init_engine(self, loader):
+        """
+        Construct and save an FFCEngine from loader.
+
+        If loader is None, constructs a NoOpFFCEngine.
+        """
+        if loader is not None:
+            self.engine = SimpleFFCEngine(
+                loader,
+                self.trading_environment.trading_days,
+                self.asset_finder,
+            )
+        else:
+            self.engine = NoOpFFCEngine()
 
     def initialize(self, *args, **kwargs):
         """
@@ -1281,7 +1287,7 @@ class TradingAlgorithm(object):
         """
         days = self.trading_environment.trading_days
         start_date_loc = days.get_loc(start_date)
-        sim_end = self.sim_params.period_end
+        sim_end = self.sim_params.last_close.normalize()
         end_loc = min(start_date_loc + 252, days.get_loc(sim_end))
         end_date = days[end_loc]
         return self.engine.factor_matrix(

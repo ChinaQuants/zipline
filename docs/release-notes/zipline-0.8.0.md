@@ -70,26 +70,28 @@ data[security].stddev(3)
   > Also adds `context.get_market_value()`, which enables this functionality.
 
   > For example:
-```python
-# this is how it works today (and this still works)
-# put 50% of my portfolio in AAPL
-order_percent('AAPL', 0.5)
-# note that if this were a fully invested portfolio, it would become 150% levered.
-
-# take half of my available cash and buy AAPL
-order_percent('AAPL', 0.5, percent_of='cash')
-
-# rebalance my short position, as a percentage of my current short book
-order_target_percent('MSFT', 0.1, percent_of='shorts')
-
-# rebalance within a custom group of stocks
-tech_stocks = ('AAPL', 'MSFT', 'GOOGL')
-tech_filter = lambda p: p.sid in tech_stocks
-for stock in tech_stocks:
-   order_target_percent(stock, 1/3, percent_of_fn=tech_filter)
-```
+  > ```python
+  # this is how it works today (and this still works)
+  # put 50% of my portfolio in AAPL
+  order_percent('AAPL', 0.5)
+  # note that if this were a fully invested portfolio, it would become 150% levered.
+  >
+  # take half of my available cash and buy AAPL
+  order_percent('AAPL', 0.5, percent_of='cash')
+  >
+  # rebalance my short position, as a percentage of my current short book
+  order_target_percent('MSFT', 0.1, percent_of='shorts')
+  >
+  # rebalance within a custom group of stocks
+  tech_stocks = ('AAPL', 'MSFT', 'GOOGL')
+  tech_filter = lambda p: p.sid in tech_stocks
+  for stock in tech_stocks:
+     order_target_percent(stock, 1/3, percent_of_fn=tech_filter)
+  ```
 
 ### Major performance enhancements to history (by Dale Jung) [PR488](https://github.com/quantopian/zipline/commit/38e8d5214d46f089020703712dc6b3f4f6ee084d)
+
+### Command line option to for printing algo to stdout (by Andrea D'Amore) [PR545](https://github.com/quantopian/zipline/pull/545)
 
 ## Contributors
 
@@ -112,4 +114,5 @@ The following people have contributed to this release, ordered by numbers of com
      1  Mete Atamel
      1  Nicholas Pezolano
      1  Philipp Kosel
+     1  Andrea D'Amore
 ```
