@@ -40,6 +40,7 @@ from zipline.errors import (
     AccountControlViolation,
     SymbolNotFound,
     RootSymbolNotFound,
+    UnsupportedDatetimeFormat,
 )
 from zipline.test_algorithms import (
     access_account_in_init,
@@ -331,27 +332,27 @@ class TestMiscellaneousAPI(TestCase):
         algo = TradingAlgorithm(asset_metadata=metadata)
 
         # Test before either PLAY existed
-        algo.datetime = pd.Timestamp('2001-12-01', tz='UTC')
+        algo.sim_params.period_end = pd.Timestamp('2001-12-01', tz='UTC')
         with self.assertRaises(SymbolNotFound):
             algo.symbol('PLAY')
         with self.assertRaises(SymbolNotFound):
             algo.symbols('PLAY')
 
         # Test when first PLAY exists
-        algo.datetime = pd.Timestamp('2002-12-01', tz='UTC')
+        algo.sim_params.period_end = pd.Timestamp('2002-12-01', tz='UTC')
         list_result = algo.symbols('PLAY')
         self.assertEqual(0, list_result[0])
 
         # Test after first PLAY ends
-        algo.datetime = pd.Timestamp('2004-12-01', tz='UTC')
+        algo.sim_params.period_end = pd.Timestamp('2004-12-01', tz='UTC')
         self.assertEqual(0, algo.symbol('PLAY'))
 
         # Test after second PLAY begins
-        algo.datetime = pd.Timestamp('2005-12-01', tz='UTC')
+        algo.sim_params.period_end = pd.Timestamp('2005-12-01', tz='UTC')
         self.assertEqual(1, algo.symbol('PLAY'))
 
         # Test after second PLAY ends
-        algo.datetime = pd.Timestamp('2006-12-01', tz='UTC')
+        algo.sim_params.period_end = pd.Timestamp('2006-12-01', tz='UTC')
         self.assertEqual(1, algo.symbol('PLAY'))
         list_result = algo.symbols('PLAY')
         self.assertEqual(1, list_result[0])
@@ -427,6 +428,55 @@ class TestMiscellaneousAPI(TestCase):
 
         with self.assertRaises(RootSymbolNotFound):
             algo.future_chain('')
+
+        # Check that invalid dates raise UnsupportedDatetimeFormat
+        with self.assertRaises(UnsupportedDatetimeFormat):
+            algo.future_chain('CL', 'my_finger_slipped')
+
+        with self.assertRaises(UnsupportedDatetimeFormat):
+            algo.future_chain('CL', '2015-09-')
+
+    def test_set_symbol_lookup_date(self):
+        """
+        Test the set_symbol_lookup_date API method.
+        """
+        # Note we start sid enumeration at i+3 so as not to
+        # collide with sids [1, 2] added in the setUp() method.
+        dates = pd.date_range('2013-01-01', freq='2D', periods=2, tz='UTC')
+        # Create two assets with the same symbol but different
+        # non-overlapping date ranges.
+        metadata = pd.DataFrame.from_records(
+            [
+                {
+                    'sid': i + 3,
+                    'file_name': 'DUP',
+                    'start_date': date.value,
+                    'end_date': (date + timedelta(days=1)).value,
+                }
+                for i, date in enumerate(dates)
+            ]
+        )
+        algo = TradingAlgorithm(asset_metadata=metadata)
+        # Set the period end to a date after the period end
+        # dates for our assets.
+        algo.sim_params.period_end = pd.Timestamp('2015-01-01', tz='UTC')
+
+        # With no symbol lookup date set, we will use the period end date
+        # for the as_of_date, resulting here in the asset with the earlier
+        # start date being returned.
+        result = algo.symbol('DUP')
+        self.assertEqual(result.symbol, 'DUP')
+
+        # By first calling set_symbol_lookup_date, the relevant asset
+        # should be returned by lookup_symbol_resolve_multiple
+        for i, date in enumerate(dates):
+            algo.set_symbol_lookup_date(date)
+            result = algo.symbol('DUP')
+            self.assertEqual(result.symbol, 'DUP')
+            self.assertEqual(result.sid, i + 3)
+
+        with self.assertRaises(UnsupportedDatetimeFormat):
+            algo.set_symbol_lookup_date('foobar')
 
 
 class TestTransformAlgorithm(TestCase):
