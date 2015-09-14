@@ -42,6 +42,7 @@ from zipline.data.ffc.loaders.us_equity_pricing import (
     USEquityPricingLoader,
 )
 # from zipline.modelling.factor import CustomFactor
+from zipline.finance import trading
 from zipline.modelling.factor.technical import VWAP
 from zipline.utils.test_utils import (
     make_simple_asset_info,
@@ -84,7 +85,9 @@ class FFCAlgorithmTestCase(TestCase):
             Timestamp('2015'),
             ['AAPL', 'MSFT', 'BRK_A'],
         )
-        cls.asset_finder = AssetFinder(asset_info)
+        cls.env = trading.TradingEnvironment()
+        cls.env.write_data(equities_df=asset_info)
+        cls.asset_finder = AssetFinder(cls.env.engine)
         cls.tempdir = tempdir = TempDirectory()
         tempdir.create()
         try:
@@ -98,6 +101,11 @@ class FFCAlgorithmTestCase(TestCase):
             raise
 
         cls.dates = cls.raw_data[cls.AAPL].index.tz_localize('UTC')
+
+    @classmethod
+    def tearDownClass(cls):
+        del cls.env
+        cls.tempdir.cleanup()
 
     @classmethod
     def create_bar_reader(cls, tempdir):
@@ -143,10 +151,6 @@ class FFCAlgorithmTestCase(TestCase):
         )
         writer.write(splits, mergers, dividends)
         return SQLiteAdjustmentReader(dbpath)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.tempdir.cleanup()
 
     def make_source(self):
         return Panel(self.raw_data).tz_localize('UTC', axis=1)

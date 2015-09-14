@@ -243,16 +243,6 @@ AssetMetaData contained an invalid Asset type: '{asset_type}'.
 """.strip()
 
 
-class UpdateAssetFinderTypeError(ZiplineError):
-    """
-    Raised when TradingEnvironment.update_asset_finder() gets an asset_finder
-    arg that is not of AssetFinder class.
-    """
-    msg = """
-TradingEnvironment can not set asset_finder to object of class {cls}.
-""".strip()
-
-
 class ConsumeAssetMetaDataError(ZiplineError):
     """
     Raised when AssetFinder.consume() is called on an invalid object.
@@ -412,3 +402,15 @@ class UnsupportedDatetimeFormat(ZiplineError):
     """
     msg = ("The input '{input}' passed to '{method}' is not "
            "coercible to a pandas.Timestamp object.")
+
+
+class PositionTrackerMissingAssetFinder(ZiplineError):
+    """
+    Raised by a PositionTracker if it is asked to update an Asset but does not
+    have an AssetFinder
+    """
+    msg = (
+        "PositionTracker attempted to update its Asset information but does "
+        "not have an AssetFinder. This may be caused by a failure to properly "
+        "de-serialize a TradingAlgorithm."
+    )

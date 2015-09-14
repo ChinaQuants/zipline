@@ -23,7 +23,6 @@ from pandas import (
 from pandas.util.testing import assert_frame_equal
 from testfixtures import TempDirectory
 
-from zipline.assets import AssetFinder
 from zipline.data.equities import USEquityPricing
 from zipline.data.ffc.synthetic import (
     ConstantLoader,
@@ -93,7 +92,9 @@ class ConstantInputTestCase(TestCase):
             start_date=self.dates[0],
             end_date=self.dates[-1],
         )
-        self.asset_finder = AssetFinder(self.asset_info)
+        environment = TradingEnvironment()
+        environment.write_data(equities_df=self.asset_info)
+        self.asset_finder = environment.asset_finder
 
     def test_bad_dates(self):
         loader = self.loader
@@ -222,12 +223,13 @@ class ConstantInputTestCase(TestCase):
 
 class FrameInputTestCase(TestCase):
 
-    def setUp(self):
-        env = TradingEnvironment.instance()
-        day = env.trading_day
+    @classmethod
+    def setUpClass(cls):
+        cls.env = TradingEnvironment()
+        day = cls.env.trading_day
 
-        self.assets = Int64Index([1, 2, 3])
-        self.dates = date_range(
+        cls.assets = Int64Index([1, 2, 3])
+        cls.dates = date_range(
             '2015-01-01',
             '2015-01-31',
             freq=day,
@@ -235,11 +237,21 @@ class FrameInputTestCase(TestCase):
         )
 
         asset_info = make_simple_asset_info(
-            self.assets,
-            start_date=self.dates[0],
-            end_date=self.dates[-1],
+            cls.assets,
+            start_date=cls.dates[0],
+            end_date=cls.dates[-1],
         )
-        self.asset_finder = AssetFinder(asset_info)
+        cls.env.write_data(equities_df=asset_info)
+        cls.asset_finder = cls.env.asset_finder
+
+    @classmethod
+    def tearDownClass(cls):
+        del cls.env
+        del cls.asset_finder
+
+    def setUp(self):
+        self.dates = FrameInputTestCase.dates
+        self.assets = FrameInputTestCase.assets
 
     @lazyval
     def base_mask(self):
@@ -329,7 +341,7 @@ class SyntheticBcolzTestCase(TestCase):
     @classmethod
     def setUpClass(cls):
         cls.first_asset_start = Timestamp('2015-04-01', tz='UTC')
-        cls.env = TradingEnvironment.instance()
+        cls.env = TradingEnvironment()
         cls.trading_day = cls.env.trading_day
         cls.asset_info = make_rotating_asset_info(
             num_assets=6,
@@ -345,7 +357,8 @@ class SyntheticBcolzTestCase(TestCase):
             freq=cls.trading_day,
         )
 
-        cls.finder = AssetFinder(cls.asset_info)
+        cls.env.write_data(equities_df=cls.asset_info)
+        cls.finder = cls.env.asset_finder
 
         cls.temp_dir = TempDirectory()
         cls.temp_dir.create()
@@ -367,6 +380,7 @@ class SyntheticBcolzTestCase(TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        del cls.env
         cls.temp_dir.cleanup()
 
     def test_SMA(self):
@@ -458,7 +472,9 @@ class MultiColumnLoaderTestCase(TestCase):
             start_date=self.dates[0],
             end_date=self.dates[-1],
         )
-        self.asset_finder = AssetFinder(asset_info)
+        env = TradingEnvironment()
+        env.write_data(equities_df=asset_info)
+        self.asset_finder = env.asset_finder
 
     def test_engine_with_multicolumn_loader(self):
         open_, close = USEquityPricing.open, USEquityPricing.close

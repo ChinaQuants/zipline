@@ -16,17 +16,20 @@
 import bisect
 import logbook
 import datetime
-from functools import wraps
 
 import pandas as pd
 import numpy as np
+from sqlalchemy import create_engine
 
 from zipline.data.loader import load_market_data
 from zipline.utils import tradingcalendar
 from zipline.assets import AssetFinder
+from zipline.assets.asset_writer import (
+    AssetDBWriterFromList,
+    AssetDBWriterFromDictionary,
+    AssetDBWriterFromDataFrame)
 from zipline.errors import (
-    NoFurtherDataError,
-    UpdateAssetFinderTypeError,
+    NoFurtherDataError
 )
 
 
@@ -47,40 +50,17 @@ log = logbook.Logger('Trading')
 #   for serialization and storage, and the timezone is used to
 #   ensure proper rollover through daylight savings and so on.
 #
-# This module maintains a global variable, environment, which is
-# subsequently referenced directly by zipline financial
-# components. To set the environment, you can set the property on
-# the module directly:
-#       from zipline.finance import trading
-#       trading.environment = TradingEnvironment()
-#
-# or if you want to switch the environment for a limited context
-# you can use a TradingEnvironment in a with clause:
-#       lse = TradingEnvironment(bm_index="^FTSE", exchange_tz="Europe/London")
-#       with lse:
-# the code here will have lse as the global trading.environment
-#           algo.run(start, end)
-#
 # User code will not normally need to use TradingEnvironment
 # directly. If you are extending zipline's core financial
-# compponents and need to use the environment, you must import the module
-# NOT the variable. If you import the module, you will get a
-# reference to the environment at import time, which will prevent
-# your code from responding to user code that changes the global
-# state.
-
-environment = None
-
+# components and need to use the environment, you must import the module and
+# build a new TradingEnvironment object, then pass that TradingEnvironment as
+# the 'env' arg to your TradingAlgorithm.
 
 class TradingEnvironment(object):
 
-    @classmethod
-    def instance(cls):
-        global environment
-        if not environment:
-            environment = TradingEnvironment()
-
-        return environment
+    # Token used as a substitute for pickling objects that contain a
+    # reference to a TradingEnvironment
+    PERSISTENT_TOKEN = "<TradingEnvironment>"
 
     def __init__(
         self,
@@ -88,7 +68,8 @@ class TradingEnvironment(object):
         bm_symbol='^GSPC',
         exchange_tz="US/Eastern",
         max_date=None,
-        env_trading_calendar=tradingcalendar
+        env_trading_calendar=tradingcalendar,
+        asset_db_path=':memory:'
     ):
         """
         @load is function that returns benchmark_returns and treasury_curves
@@ -132,61 +113,91 @@ class TradingEnvironment(object):
 
         self.exchange_tz = exchange_tz
 
-        self.asset_finder = AssetFinder()
+        self.engine = engine = create_engine('sqlite:///%s' % asset_db_path)
+        AssetDBWriterFromDictionary().init_db(engine)
+        self.asset_finder = AssetFinder(engine)
 
-    def __enter__(self, *args, **kwargs):
-        global environment
-        self.prev_environment = environment
-        environment = self
-        # return value here is associated with "as such_and_such" on the
-        # with clause.
-        return self
+    def write_data(self,
+                   engine=None,
+                   equities_data=None,
+                   futures_data=None,
+                   exchanges_data=None,
+                   root_symbols_data=None,
+                   equities_df=None,
+                   futures_df=None,
+                   exchanges_df=None,
+                   root_symbols_df=None,
+                   equities_identifiers=None,
+                   futures_identifiers=None,
+                   exchanges_identifiers=None,
+                   root_symbols_identifiers=None,
+                   allow_sid_assignment=True):
+        """ Write the supplied data to the database.
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        global environment
-        environment = self.prev_environment
-        # signal that any exceptions need to be propagated up the
-        # stack.
-        return False
-
-    def update_asset_finder(self,
-                            clear_metadata=False,
-                            asset_finder=None,
-                            asset_metadata=None,
-                            identifiers=None):
+        Parameters
+        ----------
+        equities_data: dict, optional
+            A dictionary of equity metadata
+        futures_data: dict, optional
+            A dictionary of futures metadata
+        exchanges_data: dict, optional
+            A dictionary of exchanges metadata
+        root_symbols_data: dict, optional
+            A dictionary of root symbols metadata
+        equities_df: pandas.DataFrame, optional
+            A pandas.DataFrame of equity metadata
+        futures_df: pandas.DataFrame, optional
+            A pandas.DataFrame of futures metadata
+        exchanges_df: pandas.DataFrame, optional
+            A pandas.DataFrame of exchanges metadata
+        root_symbols_df: pandas.DataFrame, optional
+            A pandas.DataFrame of root symbols metadata
+        equities_identifiers: list, optional
+            A list of equities identifiers (sids, symbols, Assets)
+        futures_identifiers: list, optional
+            A list of futures identifiers (sids, symbols, Assets)
+        exchanges_identifiers: list, optional
+            A list of exchanges identifiers (ids or names)
+        root_symbols_identifiers: list, optional
+            A list of root symbols identifiers (ids or symbols)
         """
-        Updates the AssetFinder using the provided asset metadata and
-        identifiers.
-        If clear_metadata is True, all metadata and assets held in the
-        asset_finder will be erased before new metadata is provided.
-        If asset_finder is provided, the existing asset_finder will be replaced
-        outright with the new asset_finder.
-        If asset_metadata is provided, the existing metadata will be cleared
-        and replaced with the provided metadata.
-        All identifiers will be inserted in the asset metadata if they are not
-        already present.
+        if engine:
+            self.engine = engine
 
-        :param clear_metadata: A boolean
-        :param asset_finder: An AssetFinder object to replace the environment's
-        existing asset_finder
-        :param asset_metadata: A dict, DataFrame, or readable object
-        :param identifiers: A list of identifiers to be inserted
-        :return:
-        """
-        if clear_metadata:
-            self.asset_finder.clear_metadata()
+        # If any pandas.DataFrame data has been provided,
+        # write it to the database.
+        if (equities_df is not None or futures_df is not None or
+                exchanges_df is not None or root_symbols_df is not None):
+            self._write_data_dataframes(equities_df, futures_df,
+                                        exchanges_df, root_symbols_df)
 
-        if asset_finder is not None:
-            if not isinstance(asset_finder, AssetFinder):
-                raise UpdateAssetFinderTypeError(cls=asset_finder.__class__)
-            self.asset_finder = asset_finder
+        if (equities_data is not None or futures_data is not None or
+                exchanges_data is not None or root_symbols_data is not None):
+            self._write_data_dicts(equities_data, futures_data,
+                                   exchanges_data, root_symbols_data)
 
-        if asset_metadata is not None:
-            self.asset_finder.clear_metadata()
-            self.asset_finder.consume_metadata(asset_metadata)
+        # These could be lists or other iterables such as a pandas.Index.
+        # For simplicity, don't check whether data has been provided.
+        self._write_data_lists(equities_identifiers,
+                               futures_identifiers,
+                               exchanges_identifiers,
+                               root_symbols_identifiers,
+                               allow_sid_assignment=allow_sid_assignment)
 
-        if identifiers is not None:
-            self.asset_finder.consume_identifiers(identifiers)
+    def _write_data_lists(self, equities=None, futures=None, exchanges=None,
+                          root_symbols=None, allow_sid_assignment=True):
+        AssetDBWriterFromList(equities, futures, exchanges, root_symbols)\
+            .write_all(self.engine, allow_sid_assignment=allow_sid_assignment)
+
+    def _write_data_dicts(self, equities=None, futures=None, exchanges=None,
+                          root_symbols=None, allow_sid_assignment=True):
+        AssetDBWriterFromDictionary(equities, futures, exchanges, root_symbols)\
+            .write_all(self.engine)
+
+    def _write_data_dataframes(self, equities=None, futures=None,
+                               exchanges=None, root_symbols=None):
+        AssetDBWriterFromDataFrame(equities, futures, exchanges, root_symbols)\
+            .write_all(self.engine)
 
     def normalize_date(self, test_date):
         test_date = pd.Timestamp(test_date, tz='UTC')
@@ -433,7 +444,8 @@ class SimulationParameters(object):
     def __init__(self, period_start, period_end,
                  capital_base=10e3,
                  emission_rate='daily',
-                 data_frequency='daily'):
+                 data_frequency='daily',
+                 env=None):
 
         self.period_start = period_start
         self.period_end = period_end
@@ -445,55 +457,53 @@ class SimulationParameters(object):
         # copied to algorithm's environment for runtime access
         self.arena = 'backtest'
 
-        self._update_internal()
+        if env is not None:
+            self.update_internal_from_env(env=env)
 
-    def _update_internal(self):
-        # This is the global environment for trading simulation.
-        environment = TradingEnvironment.instance()
+    def update_internal_from_env(self, env):
 
         assert self.period_start <= self.period_end, \
             "Period start falls after period end."
 
-        assert self.period_start <= environment.last_trading_day, \
+        assert self.period_start <= env.last_trading_day, \
             "Period start falls after the last known trading day."
-        assert self.period_end >= environment.first_trading_day, \
+        assert self.period_end >= env.first_trading_day, \
             "Period end falls before the first known trading day."
 
-        self.first_open = self.calculate_first_open()
-        self.last_close = self.calculate_last_close()
-        start_index = \
-            environment.get_index(self.first_open)
-        end_index = environment.get_index(self.last_close)
+        self.first_open = self._calculate_first_open(env)
+        self.last_close = self._calculate_last_close(env)
+
+        start_index = env.get_index(self.first_open)
+        end_index = env.get_index(self.last_close)
 
         # take an inclusive slice of the environment's
         # trading_days.
-        self.trading_days = \
-            environment.trading_days[start_index:end_index + 1]
+        self.trading_days = env.trading_days[start_index:end_index + 1]
 
-    def calculate_first_open(self):
+    def _calculate_first_open(self, env):
         """
         Finds the first trading day on or after self.period_start.
         """
         first_open = self.period_start
         one_day = datetime.timedelta(days=1)
 
-        while not environment.is_trading_day(first_open):
+        while not env.is_trading_day(first_open):
             first_open = first_open + one_day
 
-        mkt_open, _ = environment.get_open_and_close(first_open)
+        mkt_open, _ = env.get_open_and_close(first_open)
         return mkt_open
 
-    def calculate_last_close(self):
+    def _calculate_last_close(self, env):
         """
         Finds the last trading day on or before self.period_end
         """
         last_close = self.period_end
         one_day = datetime.timedelta(days=1)
 
-        while not environment.is_trading_day(last_close):
+        while not env.is_trading_day(last_close):
             last_close = last_close - one_day
 
-        _, mkt_close = environment.get_open_and_close(last_close)
+        _, mkt_close = env.get_open_and_close(last_close)
         return mkt_close
 
     @property
@@ -519,33 +529,3 @@ class SimulationParameters(object):
            emission_rate=self.emission_rate,
            first_open=self.first_open,
            last_close=self.last_close)
-
-
-def with_environment(asname='env'):
-    """
-    Decorator to automagically pass TradingEnvironment to the function
-    under the name asname. If the environment is passed explicitly as a keyword
-    then the explicitly passed value will be used instead.
-
-    usage:
-       with_environment()
-       def f(env=None):
-           pass
-
-       with_environment(asname='my_env')
-       def g(my_env=None):
-           pass
-    """
-    def with_environment_decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            # inject env into the namespace for the function.
-            # This doesn't use setdefault so that grabbing the trading env
-            # is lazy.
-            if asname not in kwargs:
-                kwargs[asname] = TradingEnvironment.instance()
-            return f(*args, **kwargs)
-
-        return wrapper
-
-    return with_environment_decorator

@@ -229,12 +229,6 @@ def run_pipeline(print_algo=True, **kwargs):
         with open(algo_fname, 'r') as fd:
             algo_text = fd.read()
 
-        analyze_fname = os.path.splitext(algo_fname)[0] + '_analyze.py'
-        if os.path.exists(analyze_fname):
-            with open(analyze_fname, 'r') as fd:
-                # Simply append
-                algo_text += fd.read()
-
     if print_algo:
         if PYGMENTS:
             highlight(algo_text, PythonLexer(), TerminalFormatter(),
@@ -246,7 +240,7 @@ def run_pipeline(print_algo=True, **kwargs):
                                     namespace=kwargs.get('namespace', {}),
                                     capital_base=float(kwargs['capital_base']),
                                     algo_filename=kwargs.get('algofile'),
-                                    asset_metadata=asset_metadata,
+                                    equities_metadata=asset_metadata,
                                     identifiers=symbols,
                                     start=start,
                                     end=end)
