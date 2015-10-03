@@ -16,7 +16,7 @@ import datetime
 from datetime import timedelta
 from mock import MagicMock
 from nose_parameterized import parameterized
-from six.moves import range
+from six.moves import range, map
 from textwrap import dedent
 from unittest import TestCase
 
@@ -598,6 +598,26 @@ class TestTransformAlgorithm(TestCase):
         algo = TestRegisterTransformAlgorithm(
             sim_params=self.sim_params,
             env=self.env,
+            sids=[0, 1])
+        panel = self.panel.copy()
+        panel.items = pd.Index(map(Equity, panel.items))
+        algo.run(panel)
+        assert isinstance(algo.sources[0], DataPanelSource)
+
+    def test_df_of_assets_as_input(self):
+        algo = TestRegisterTransformAlgorithm(
+            sim_params=self.sim_params,
+            env=TradingEnvironment(),  # new env without assets
+        )
+        df = self.df.copy()
+        df.columns = pd.Index(map(Equity, df.columns))
+        algo.run(df)
+        assert isinstance(algo.sources[0], DataFrameSource)
+
+    def test_panel_of_assets_as_input(self):
+        algo = TestRegisterTransformAlgorithm(
+            sim_params=self.sim_params,
+            env=TradingEnvironment(),  # new env without assets
             sids=[0, 1])
         algo.run(self.panel)
         assert isinstance(algo.sources[0], DataPanelSource)
@@ -1661,21 +1681,22 @@ class TestClosePosAlgo(TestCase):
 
     def setUp(self):
         self.env = TradingEnvironment()
-        self.days = self.env.trading_days
-        self.index = [self.days[0], self.days[1], self.days[2]]
+        self.days = self.env.trading_days[:4]
         self.panel = pd.Panel({1: pd.DataFrame({
-            'price': [1, 2, 4], 'volume': [1e9, 0, 0],
+            'price': [1, 1, 2, 4], 'volume': [1e9, 1e9, 1e9, 0],
             'type': [DATASOURCE_TYPE.TRADE,
+                     DATASOURCE_TYPE.TRADE,
                      DATASOURCE_TYPE.TRADE,
                      DATASOURCE_TYPE.CLOSE_POSITION]},
-            index=self.index)
+            index=self.days)
         })
         self.no_close_panel = pd.Panel({1: pd.DataFrame({
-            'price': [1, 2, 4], 'volume': [1e9, 0, 0],
+            'price': [1, 1, 2, 4], 'volume': [1e9, 1e9, 1e9, 1e9],
             'type': [DATASOURCE_TYPE.TRADE,
                      DATASOURCE_TYPE.TRADE,
+                     DATASOURCE_TYPE.TRADE,
                      DATASOURCE_TYPE.TRADE]},
-            index=self.index)
+            index=self.days)
         })
 
     def test_close_position_equity(self):
@@ -1683,61 +1704,56 @@ class TestClosePosAlgo(TestCase):
                         'asset_type': 'equity',
                         'end_date': self.days[3]}}
         self.env.write_data(equities_data=metadata)
-        self.algo = TestAlgorithm(sid=1, amount=1, order_count=1,
-                                  instant_fill=True, commission=PerShare(0),
-                                  env=self.env)
-        self.data = DataPanelSource(self.panel)
+        algo = TestAlgorithm(sid=1, amount=1, order_count=1,
+                             commission=PerShare(0),
+                             env=self.env)
+        data = DataPanelSource(self.panel)
 
         # Check results
-        expected_positions = [1, 1, 0]
-        expected_pnl = [0, 1, 2]
-        results = self.run_algo()
-        self.check_algo_pnl(results, expected_pnl)
+        expected_positions = [0, 1, 1, 0]
+        expected_pnl = [0, 0, 1, 2]
+        results = algo.run(data)
         self.check_algo_positions(results, expected_positions)
+        self.check_algo_pnl(results, expected_pnl)
 
     def test_close_position_future(self):
         metadata = {1: {'symbol': 'TEST',
                         'asset_type': 'future',
                         }}
         self.env.write_data(futures_data=metadata)
-        self.algo = TestAlgorithm(sid=1, amount=1, order_count=1,
-                                  instant_fill=True, commission=PerShare(0),
-                                  env=self.env)
-        self.data = DataPanelSource(self.panel)
+        algo = TestAlgorithm(sid=1, amount=1, order_count=1,
+                             commission=PerShare(0),
+                             env=self.env)
+        data = DataPanelSource(self.panel)
 
         # Check results
-        expected_positions = [1, 1, 0]
-        expected_pnl = [0, 1, 2]
-        results = self.run_algo()
+        expected_positions = [0, 1, 1, 0]
+        expected_pnl = [0, 0, 1, 2]
+        results = algo.run(data)
         self.check_algo_pnl(results, expected_pnl)
         self.check_algo_positions(results, expected_positions)
 
     def test_auto_close_future(self):
         metadata = {1: {'symbol': 'TEST',
                         'asset_type': 'future',
-                        'auto_close_date': self.days[3]}}
+                        'auto_close_date': self.env.trading_days[4]}}
         self.env.write_data(futures_data=metadata)
-        self.algo = TestAlgorithm(sid=1, amount=1, order_count=1,
-                                  instant_fill=True, commission=PerShare(0),
-                                  env=self.env)
-        self.data = DataPanelSource(self.no_close_panel)
+        algo = TestAlgorithm(sid=1, amount=1, order_count=1,
+                             commission=PerShare(0),
+                             env=self.env)
+        data = DataPanelSource(self.no_close_panel)
 
         # Check results
-        results = self.run_algo()
+        results = algo.run(data)
 
-        expected_pnl = [0, 1, 2]
-        self.check_algo_pnl(results, expected_pnl)
-
-        expected_positions = [1, 1, 0]
+        expected_positions = [0, 1, 1, 0]
         self.check_algo_positions(results, expected_positions)
 
-    def run_algo(self):
-        results = self.algo.run(self.data)
-        return results
+        expected_pnl = [0, 0, 1, 2]
+        self.check_algo_pnl(results, expected_pnl)
 
     def check_algo_pnl(self, results, expected_pnl):
-        for i, pnl in enumerate(results.pnl):
-            self.assertEqual(pnl, expected_pnl[i])
+        np.testing.assert_array_almost_equal(results.pnl, expected_pnl)
 
     def check_algo_positions(self, results, expected_positions):
         for i, amount in enumerate(results.positions):
@@ -1746,4 +1762,7 @@ class TestClosePosAlgo(TestCase):
             else:
                 actual_position = 0
 
-            self.assertEqual(actual_position, expected_positions[i])
+            self.assertEqual(
+                actual_position, expected_positions[i],
+                "position for day={0} not equal, actual={1}, expected={2}".
+                format(i, actual_position, expected_positions[i]))
