@@ -13,7 +13,9 @@ from numpy import (
     array,
     arange,
     full_like,
+    float64,
     nan,
+    uint32,
 )
 from numpy.testing import assert_almost_equal
 from pandas import (
@@ -182,7 +184,7 @@ class ClosesOnly(TestCase):
             initialize=initialize,
             handle_data=late_attach,
             data_frequency='daily',
-            pipeline_loader=self.pipeline_loader,
+            get_pipeline_loader=lambda column: self.pipeline_loader,
             start=self.first_asset_start - trading_day,
             end=self.last_asset_end + trading_day,
             env=self.env,
@@ -199,7 +201,7 @@ class ClosesOnly(TestCase):
             before_trading_start=late_attach,
             handle_data=barf,
             data_frequency='daily',
-            pipeline_loader=self.pipeline_loader,
+            get_pipeline_loader=lambda column: self.pipeline_loader,
             start=self.first_asset_start - trading_day,
             end=self.last_asset_end + trading_day,
             env=self.env,
@@ -228,7 +230,7 @@ class ClosesOnly(TestCase):
             handle_data=handle_data,
             before_trading_start=before_trading_start,
             data_frequency='daily',
-            pipeline_loader=self.pipeline_loader,
+            get_pipeline_loader=lambda column: self.pipeline_loader,
             start=self.first_asset_start - trading_day,
             end=self.last_asset_end + trading_day,
             env=self.env,
@@ -256,7 +258,7 @@ class ClosesOnly(TestCase):
             handle_data=handle_data,
             before_trading_start=before_trading_start,
             data_frequency='daily',
-            pipeline_loader=self.pipeline_loader,
+            get_pipeline_loader=lambda column: self.pipeline_loader,
             start=self.first_asset_start - trading_day,
             end=self.last_asset_end + trading_day,
             env=self.env,
@@ -294,7 +296,7 @@ class ClosesOnly(TestCase):
             handle_data=handle_data,
             before_trading_start=before_trading_start,
             data_frequency='daily',
-            pipeline_loader=self.pipeline_loader,
+            get_pipeline_loader=lambda column: self.pipeline_loader,
             start=self.first_asset_start - trading_day,
             end=self.last_asset_end + trading_day,
             env=self.env,
@@ -302,6 +304,14 @@ class ClosesOnly(TestCase):
 
         # Run for a week in the middle of our data.
         algo.run(source=self.closes.iloc[10:17])
+
+
+class MockDailyBarSpotReader(object):
+    """
+    A BcolzDailyBarReader which returns a constant value for spot price.
+    """
+    def spot_price(self, sid, day, column):
+        return 100.0
 
 
 class PipelineAlgorithmTestCase(TestCase):
@@ -364,7 +374,8 @@ class PipelineAlgorithmTestCase(TestCase):
     @classmethod
     def create_adjustment_reader(cls, tempdir):
         dbpath = tempdir.getpath('adjustments.sqlite')
-        writer = SQLiteAdjustmentWriter(dbpath)
+        writer = SQLiteAdjustmentWriter(dbpath, cls.env.trading_days,
+                                        MockDailyBarSpotReader())
         splits = DataFrame.from_records([
             {
                 'effective_date': str_to_seconds('2014-06-09'),
@@ -372,7 +383,7 @@ class PipelineAlgorithmTestCase(TestCase):
                 'sid': cls.AAPL,
             }
         ])
-        mergers = dividends = DataFrame(
+        mergers = DataFrame(
             {
                 # Hackery to make the dtypes correct on an empty frame.
                 'effective_date': array([], dtype=int),
@@ -382,6 +393,14 @@ class PipelineAlgorithmTestCase(TestCase):
             index=DatetimeIndex([], tz='UTC'),
             columns=['effective_date', 'ratio', 'sid'],
         )
+        dividends = DataFrame({
+            'sid': array([], dtype=uint32),
+            'amount': array([], dtype=float64),
+            'record_date': array([], dtype='datetime64[ns]'),
+            'ex_date': array([], dtype='datetime64[ns]'),
+            'declared_date': array([], dtype='datetime64[ns]'),
+            'pay_date': array([], dtype='datetime64[ns]'),
+        })
         writer.write(splits, mergers, dividends)
         return SQLiteAdjustmentReader(dbpath)
 
@@ -524,7 +543,7 @@ class PipelineAlgorithmTestCase(TestCase):
             handle_data=handle_data,
             before_trading_start=before_trading_start,
             data_frequency='daily',
-            pipeline_loader=self.pipeline_loader,
+            get_pipeline_loader=lambda column: self.pipeline_loader,
             start=self.dates[max(window_lengths)],
             end=self.dates[-1],
             env=self.env,
